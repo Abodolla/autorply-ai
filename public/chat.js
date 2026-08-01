@@ -1,5 +1,4 @@
 const APP_PREFIX = "/autorply-ai";
-const TEST_ACCOUNT_ID = "178461";
 
 const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
@@ -39,7 +38,11 @@ async function sendMessage() {
 
 	userInput.value = "";
 	userInput.style.height = "auto";
-	chatHistory.push({ role: "user", content: message });
+
+	chatHistory.push({
+		role: "user",
+		content: message,
+	});
 
 	try {
 		if (isRevalidateCommand(message)) {
@@ -50,6 +53,7 @@ async function sendMessage() {
 		await requestAssistantResponse();
 	} catch (error) {
 		console.error(error);
+
 		addMessageToChat(
 			"assistant",
 			`❌ تعذر تنفيذ الطلب: ${error.message || "حدث خطأ غير متوقع"}`,
@@ -78,17 +82,50 @@ function isRevalidateCommand(message) {
 	].some((command) => normalized.includes(command));
 }
 
+async function getCurrentWhatsAppAccount() {
+	const response = await fetch("/whatsapp/bot/connect", {
+		method: "GET",
+		credentials: "same-origin",
+		headers: {
+			Accept: "text/html",
+		},
+	});
+
+	if (!response.ok) {
+		throw new Error(`تعذر قراءة حساب واتساب (${response.status})`);
+	}
+
+	const html = await response.text();
+	const doc = new DOMParser().parseFromString(html, "text/html");
+
+	const accountId =
+		doc.querySelector(".revalidate-token")?.dataset.id || null;
+
+	const csrfToken =
+		doc.querySelector('meta[name="csrf-token"]')?.content || null;
+
+	if (!accountId) {
+		throw new Error("لم يتم العثور على معرّف حساب واتساب");
+	}
+
+	if (!csrfToken) {
+		throw new Error("لم يتم العثور على رمز جلسة المنصة");
+	}
+
+	return {
+		accountId,
+		csrfToken,
+	};
+}
+
 async function runRevalidateTool() {
 	addMessageToChat(
 		"assistant",
 		"جاري إعادة التحقق من حساب واتساب ومزامنته...",
 	);
 
-	const token = getXsrfToken();
-
-	if (!token) {
-		throw new Error("لم أجد رمز جلسة المنصة. تأكد أنك مسجل دخول.");
-	}
+	const { accountId, csrfToken } =
+		await getCurrentWhatsAppAccount();
 
 	const startedAt = performance.now();
 
@@ -99,17 +136,18 @@ async function runRevalidateTool() {
 			Accept: "application/json",
 			"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
 			"X-Requested-With": "XMLHttpRequest",
-			"X-CSRF-TOKEN": token,
-			"X-XSRF-TOKEN": token,
+			"X-CSRF-TOKEN": csrfToken,
+			"X-XSRF-TOKEN": csrfToken,
 		},
 		body: new URLSearchParams({
-			id: TEST_ACCOUNT_ID,
+			id: accountId,
 		}),
 	});
 
 	const text = await response.text();
 
 	let result;
+
 	try {
 		result = JSON.parse(text);
 	} catch {
@@ -117,33 +155,33 @@ async function runRevalidateTool() {
 	}
 
 	if (!response.ok || result.status !== "1") {
-		throw new Error(result.message || `فشل التنفيذ برمز ${response.status}`);
+		throw new Error(
+			result.message || `فشل التنفيذ برمز ${response.status}`,
+		);
 	}
 
-	const seconds = ((performance.now() - startedAt) / 1000).toFixed(1);
-	const successMessage = `✅ ${result.message}\nمدة التنفيذ: ${seconds} ثانية`;
+	const seconds = (
+		(performance.now() - startedAt) /
+		1000
+	).toFixed(1);
+
+	const successMessage =
+		`✅ ${result.message}\nمدة التنفيذ: ${seconds} ثانية`;
 
 	addMessageToChat("assistant", successMessage);
+
 	chatHistory.push({
 		role: "assistant",
 		content: successMessage,
 	});
 }
 
-function getXsrfToken() {
-	const cookie = document.cookie
-		.split("; ")
-		.find((item) => item.startsWith("XSRF-TOKEN="));
-
-	if (!cookie) return null;
-
-	const value = cookie.substring("XSRF-TOKEN=".length);
-	return decodeURIComponent(value);
-}
-
 async function requestAssistantResponse() {
-	const assistantMessageEl = createMessageElement("assistant", "");
-	const assistantTextEl = assistantMessageEl.querySelector("p");
+	const assistantMessageEl =
+		createMessageElement("assistant", "");
+
+	const assistantTextEl =
+		assistantMessageEl.querySelector("p");
 
 	const response = await fetch(`${APP_PREFIX}/api/chat`, {
 		method: "POST",
@@ -156,7 +194,9 @@ async function requestAssistantResponse() {
 	});
 
 	if (!response.ok) {
-		throw new Error(`فشل الحصول على الرد (${response.status})`);
+		throw new Error(
+			`فشل الحصول على الرد (${response.status})`,
+		);
 	}
 
 	if (!response.body) {
@@ -174,10 +214,15 @@ async function requestAssistantResponse() {
 		const { done, value } = await reader.read();
 
 		if (value) {
-			buffer += decoder.decode(value, { stream: !done });
+			buffer += decoder.decode(value, {
+				stream: !done,
+			});
 		}
 
-		const parsed = consumeSseEvents(done ? `${buffer}\n\n` : buffer);
+		const parsed = consumeSseEvents(
+			done ? `${buffer}\n\n` : buffer,
+		);
+
 		buffer = parsed.buffer;
 
 		for (const data of parsed.events) {
@@ -200,7 +245,11 @@ async function requestAssistantResponse() {
 					scrollToBottom();
 				}
 			} catch (error) {
-				console.error("تعذر قراءة جزء من الرد:", error, data);
+				console.error(
+					"تعذر قراءة جزء من الرد:",
+					error,
+					data,
+				);
 			}
 		}
 
@@ -219,7 +268,11 @@ function setProcessing(processing) {
 	isProcessing = processing;
 	userInput.disabled = processing;
 	sendButton.disabled = processing;
-	typingIndicator.classList.toggle("visible", processing);
+
+	typingIndicator.classList.toggle(
+		"visible",
+		processing,
+	);
 
 	if (!processing) {
 		userInput.focus();
@@ -228,13 +281,18 @@ function setProcessing(processing) {
 
 function createMessageElement(role, content) {
 	const messageEl = document.createElement("div");
-	messageEl.className = `message ${role}-message`;
 
-	const paragraph = document.createElement("p");
+	messageEl.className =
+		`message ${role}-message`;
+
+	const paragraph =
+		document.createElement("p");
+
 	paragraph.textContent = content;
 
 	messageEl.appendChild(paragraph);
 	chatMessages.appendChild(messageEl);
+
 	scrollToBottom();
 
 	return messageEl;
@@ -245,22 +303,36 @@ function addMessageToChat(role, content) {
 }
 
 function scrollToBottom() {
-	chatMessages.scrollTop = chatMessages.scrollHeight;
+	chatMessages.scrollTop =
+		chatMessages.scrollHeight;
 }
 
 function consumeSseEvents(buffer) {
 	let normalized = buffer.replace(/\r/g, "");
 	const events = [];
+
 	let eventEndIndex;
 
-	while ((eventEndIndex = normalized.indexOf("\n\n")) !== -1) {
-		const rawEvent = normalized.slice(0, eventEndIndex);
-		normalized = normalized.slice(eventEndIndex + 2);
+	while (
+		(eventEndIndex =
+			normalized.indexOf("\n\n")) !== -1
+	) {
+		const rawEvent =
+			normalized.slice(0, eventEndIndex);
+
+		normalized =
+			normalized.slice(eventEndIndex + 2);
 
 		const dataLines = rawEvent
 			.split("\n")
-			.filter((line) => line.startsWith("data:"))
-			.map((line) => line.slice("data:".length).trimStart());
+			.filter((line) =>
+				line.startsWith("data:"),
+			)
+			.map((line) =>
+				line
+					.slice("data:".length)
+					.trimStart(),
+			);
 
 		if (dataLines.length) {
 			events.push(dataLines.join("\n"));
