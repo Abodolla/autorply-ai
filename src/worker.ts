@@ -10,14 +10,10 @@ const SYSTEM_PROMPT =
 const ACCOUNT_ERROR =
 	"❌ تعذر الوصول إلى حساب واتساب المرتبط.\nتأكد أنك مسجل الدخول إلى منصة Autorply من نفس المتصفح، ثم أعد المحاولة.";
 
-type RuntimeEnv = Env & {
-	AI_GATEWAY_TOKEN?: string;
-};
-
 export default {
 	async fetch(
 		request: Request,
-		env: RuntimeEnv,
+		env: Env,
 		ctx: ExecutionContext,
 	): Promise<Response> {
 		const url = new URL(request.url);
@@ -45,7 +41,7 @@ export default {
 
 		return app.fetch(request, env, ctx);
 	},
-} satisfies ExportedHandler<RuntimeEnv>;
+} satisfies ExportedHandler<Env>;
 
 function normalizePath(pathname: string): string {
 	if (pathname === APP_PREFIX) return "/";
@@ -57,14 +53,10 @@ function normalizePath(pathname: string): string {
 
 async function handleOpenAIChat(
 	request: Request,
-	env: RuntimeEnv,
+	env: Env,
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
-		if (!env.AI_GATEWAY_TOKEN) {
-			return jsonError("AI Gateway Token غير مضاف إلى إعدادات Worker", 500);
-		}
-
 		const accountDbId = await getAuthenticatedAccountDbId(request, env);
 		const body = (await request.json()) as {
 			conversationId?: number;
@@ -115,7 +107,6 @@ async function handleOpenAIChat(
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				"cf-aig-authorization": `Bearer ${env.AI_GATEWAY_TOKEN}`,
 				"cf-aig-collect-log-payload": "false",
 			},
 			body: JSON.stringify({
@@ -210,7 +201,7 @@ async function storeAssistantResponse(
 	stream: ReadableStream<Uint8Array>,
 	conversationId: number,
 	startedAt: number,
-	env: RuntimeEnv,
+	env: Env,
 ): Promise<void> {
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
@@ -262,7 +253,7 @@ async function storeAssistantResponse(
 
 async function getAuthenticatedAccountDbId(
 	request: Request,
-	env: RuntimeEnv,
+	env: Env,
 ): Promise<number> {
 	const cookie = request.headers.get("Cookie")?.trim() || "";
 	if (!cookie) throw new Error(ACCOUNT_ERROR);
@@ -310,7 +301,7 @@ async function getAuthenticatedAccountDbId(
 async function updateConversationTitle(
 	conversationId: number,
 	content: string,
-	env: RuntimeEnv,
+	env: Env,
 ): Promise<void> {
 	const count = await env.DB.prepare(
 		"SELECT COUNT(*) AS total FROM messages WHERE conversation_id = ? AND role = 'user'",
