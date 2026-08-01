@@ -50,6 +50,19 @@ async function handleApiRequest(
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
+		if (pathname === "/api/session-check" && request.method === "GET") {
+			const accountId = await resolveAuthenticatedAccountId(request);
+			return json(
+				{
+					authenticated: true,
+					accountId,
+					source: "server-verified-autorply-session",
+				},
+				200,
+				{ "cache-control": "no-store" },
+			);
+		}
+
 		const account = await getAuthenticatedAccount(request, env);
 
 		if (pathname === "/api/conversations") {
@@ -108,25 +121,31 @@ async function handleApiRequest(
 		console.error("API error:", error);
 		const message = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
 		const status = message === ACCOUNT_ERROR ? 401 : 500;
-		return json({ error: message }, status);
+		return json({ error: message }, status, { "cache-control": "no-store" });
 	}
 }
 
-async function getAuthenticatedAccount(
-	request: Request,
-	env: Env,
-): Promise<AccountRecord> {
-	const cookie = request.headers.get("Cookie") || "";
-	const connectUrl = new URL("/whatsapp/bot/connect", request.url);
+async function resolveAuthenticatedAccountId(request: Request): Promise<string> {
+	const cookie = request.headers.get("Cookie")?.trim() || "";
+
+	if (!cookie) {
+		throw new Error(ACCOUNT_ERROR);
+	}
+
+	const requestUrl = new URL(request.url);
+	const connectUrl = new URL("/whatsapp/bot/connect", requestUrl.origin);
 	const response = await fetch(connectUrl.toString(), {
+		method: "GET",
 		headers: {
 			Accept: "text/html",
 			Cookie: cookie,
+			"User-Agent": request.headers.get("User-Agent") || "Autorply-AI-Worker",
 		},
 		redirect: "manual",
 	});
 
-	if (!response.ok) {
+	const contentType = response.headers.get("content-type") || "";
+	if (!response.ok || !contentType.toLowerCase().includes("text/html")) {
 		throw new Error(ACCOUNT_ERROR);
 	}
 
@@ -136,6 +155,15 @@ async function getAuthenticatedAccount(
 	if (!accountId) {
 		throw new Error(ACCOUNT_ERROR);
 	}
+
+	return accountId;
+}
+
+async function getAuthenticatedAccount(
+	request: Request,
+	env: Env,
+): Promise<AccountRecord> {
+	const accountId = await resolveAuthenticatedAccountId(request);
 
 	let account = await env.DB.prepare(
 		"SELECT id, account_id, name FROM accounts WHERE account_id = ? LIMIT 1",
@@ -480,9 +508,16 @@ function consumeSseEvents(buffer: string): { events: string[]; buffer: string } 
 	return { events, buffer: normalized };
 }
 
-function json(data: unknown, status = 200): Response {
+function json(
+	data: unknown,
+	status = 200,
+	extraHeaders: Record<string, string> = {},
+): Response {
 	return new Response(JSON.stringify(data), {
 		status,
-		headers: { "content-type": "application/json; charset=utf-8" },
+		headers: {
+			"content-type": "application/json; charset=utf-8",
+			...extraHeaders,
+		},
 	});
 }
