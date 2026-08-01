@@ -18,5 +18,12 @@
 	"ai": {
 		"binding": "AI"
 	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "autorply-ai",
+			"database_id": "3c55afe8-4b8f-4893-acf2-ea07d6b17d49"
+		}
+	],
 	"upload_source_maps": true
 }
