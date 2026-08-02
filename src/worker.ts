@@ -81,12 +81,29 @@ async function handleSyncTemplates(request: Request): Promise<Response> {
 		}
 
 		const html = await connectResponse.text();
-		const csrfToken = extractCsrfToken(html);
-		const whatsappBotId =
-			extractElementValue(html, "bm_mobile_bot") ||
-			extractElementValue(html, "bm_selected_whatsapp_bot_id") ||
-			extractElementValue(html, "bot_id") ||
-			extractRevalidateBotId(html);
+		let csrfToken = extractCsrfToken(html);
+		let whatsappBotId = extractWhatsAppBotId(html);
+
+		if (!whatsappBotId) {
+			const managerUrl = new URL("/bot-manager", origin);
+			managerUrl.searchParams.set("channel", "whatsapp");
+			managerUrl.searchParams.set("section", "message_templates");
+			managerUrl.searchParams.set("selected_channel", "whatsapp");
+			const managerResponse = await fetch(managerUrl.toString(), {
+				method: "GET",
+				headers: { Accept: "text/html", Cookie: cookie, "User-Agent": userAgent },
+				redirect: "manual",
+			});
+
+			const managerContentType = managerResponse.headers.get("content-type") || "";
+			if (!managerResponse.ok || !managerContentType.toLowerCase().includes("text/html")) {
+				throw new Error("تعذر تحميل صفحة إدارة قوالب واتساب من جلسة Autorply الحالية.");
+			}
+
+			const managerHtml = await managerResponse.text();
+			csrfToken ||= extractCsrfToken(managerHtml);
+			whatsappBotId = extractWhatsAppBotId(managerHtml);
+		}
 
 		if (!csrfToken) throw new Error("تعذر استخراج CSRF من جلسة Autorply الحالية.");
 		if (!whatsappBotId || !/^\d+$/.test(whatsappBotId)) {
@@ -207,15 +224,12 @@ function extractElementValue(html: string, elementId: string): string | null {
 	return null;
 }
 
-function extractRevalidateBotId(html: string): string | null {
-	const tags = html.match(/<[^>]*\bclass\s*=\s*(["']).*?\1[^>]*>/gi) || [];
-	for (const tag of tags) {
-		const classes = getAttribute(tag, "class")?.split(/\s+/) || [];
-		if (!classes.includes("revalidate-token")) continue;
-		const id = getAttribute(tag, "data-id");
-		if (id) return id;
-	}
-	return null;
+function extractWhatsAppBotId(html: string): string | null {
+	return (
+		extractElementValue(html, "bm_mobile_bot") ||
+		extractElementValue(html, "bm_selected_whatsapp_bot_id") ||
+		extractElementValue(html, "bot_id")
+	);
 }
 
 function parseJsonObject(value: string): Record<string, unknown> | null {
