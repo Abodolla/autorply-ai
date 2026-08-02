@@ -17,6 +17,7 @@ const toastStack = $("toast-stack");
 const deleteModal = $("delete-modal");
 const confirmDeleteButton = $("confirm-delete-button");
 const cancelDeleteButton = $("cancel-delete-button");
+const saveState = $("save-state");
 
 let conversations = [];
 let activeConversationId = null;
@@ -24,7 +25,11 @@ let pendingDeleteId = null;
 let isProcessing = false;
 let conversationLimit = 20;
 
-userInput.addEventListener("input", function () { this.style.height = "auto"; this.style.height = `${this.scrollHeight}px`; });
+userInput.addEventListener("input", function () {
+	this.style.height = "auto";
+	this.style.height = `${Math.min(this.scrollHeight, 150)}px`;
+	saveDraft();
+});
 userInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } });
 sendButton.addEventListener("click", sendMessage);
 newChatButton.addEventListener("click", createConversation);
@@ -97,6 +102,7 @@ async function openConversation(id) {
 	chatMessages.innerHTML = "";
 	if (!data.messages.length) renderWelcome();
 	else data.messages.forEach((message) => addMessageToChat(message.role, message.content));
+	restoreDraft();
 	renderConversationList();
 	setComposerEnabled(true);
 	userInput.focus();
@@ -146,12 +152,12 @@ function renderConversationList() {
 		item.className = `conversation-item${conversation.id === activeConversationId ? " active" : ""}`;
 		const openButton = document.createElement("button");
 		openButton.className = "conversation-open";
-		openButton.textContent = conversation.title || "محادثة جديدة";
-		openButton.title = openButton.textContent;
+		openButton.title = conversation.title || "محادثة جديدة";
+		openButton.innerHTML = `<svg class="conversation-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 10h8M8 14h5" stroke-linecap="round"/><path d="M20 11.5a8 8 0 1 1-3.1-6.3L20 4v7.5Z" stroke-linejoin="round"/></svg><span class="conversation-copy"><span class="conversation-name">${escapeHtml(conversation.title || "محادثة جديدة")}</span><span class="conversation-date">${formatConversationDate(conversation.updated_at)}</span></span>`;
 		openButton.addEventListener("click", () => openConversation(conversation.id));
 		const deleteButton = document.createElement("button");
 		deleteButton.className = "delete-chat";
-		deleteButton.innerHTML = "&#128465;";
+		deleteButton.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5M14 11v5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 		deleteButton.title = "حذف المحادثة";
 		deleteButton.addEventListener("click", (event) => requestDeleteConversation(conversation.id, event));
 		item.append(openButton, deleteButton);
@@ -162,7 +168,7 @@ function renderConversationList() {
 async function sendMessage() {
 	const message = userInput.value.trim();
 	if (!message || isProcessing || !activeConversationId) return;
-	setProcessing(true); removeWelcome(); addMessageToChat("user", message); userInput.value = ""; userInput.style.height = "auto";
+	setProcessing(true); setSaveState("saving"); removeWelcome(); addMessageToChat("user", message); userInput.value = ""; userInput.style.height = "auto"; clearDraft();
 	try {
 		if (isSyncTemplatesCommand(message)) { await saveConversationMessage("user", message); await runSyncTemplatesTool(); }
 		else if (isRevalidateCommand(message)) { await saveConversationMessage("user", message); await runRevalidateTool(); }
@@ -170,10 +176,13 @@ async function sendMessage() {
 		await loadConversations();
 		const active = conversations.find((item) => item.id === activeConversationId);
 		if (active) conversationTitle.textContent = active.title;
+		setSaveState("saved");
 	} catch (error) {
 		console.error(error);
 		const errorMessage = error.message === ACCOUNT_ERROR ? ACCOUNT_ERROR : `❌ تعذر تنفيذ الطلب: ${error.message || "حدث خطأ غير متوقع"}`;
 		addMessageToChat("assistant", errorMessage);
+		try { await saveConversationMessage("assistant", errorMessage); } catch (saveError) { console.error("تعذر حفظ رسالة الخطأ:", saveError); }
+		setSaveState("error");
 		showToast(error.message || "تعذر تنفيذ الطلب", "error");
 	} finally { setProcessing(false); }
 }
@@ -272,13 +281,74 @@ function setProcessing(processing) {
 	if (!processing) userInput.focus();
 }
 function setComposerEnabled(enabled) { userInput.disabled = !enabled; sendButton.disabled = !enabled; }
-function createMessageElement(role, content) { const el = document.createElement("div"); el.className = `message ${role}-message`; const p = document.createElement("p"); p.textContent = content; el.appendChild(p); chatMessages.appendChild(el); scrollToBottom(); return el; }
+function createMessageElement(role, content) {
+	const el = document.createElement("div");
+	el.className = `message ${role}-message`;
+	const avatar = document.createElement("div");
+	avatar.className = "message-avatar";
+	avatar.textContent = role === "assistant" ? "AI" : "أنت";
+	const body = document.createElement("div");
+	body.className = "message-body";
+	const label = document.createElement("span");
+	label.className = "message-label";
+	label.textContent = role === "assistant" ? "مساعد Autorply" : "أنت";
+	const p = document.createElement("p");
+	p.textContent = content;
+	body.append(label, p);
+	el.append(avatar, body);
+	chatMessages.appendChild(el);
+	scrollToBottom();
+	return el;
+}
 function addMessageToChat(role, content) { createMessageElement(role, content); }
-function renderWelcome() { chatMessages.innerHTML = '<div class="welcome" id="welcome-message"><strong>مرحبًا 👋</strong>أنا مساعد Autorply. ابدأ بسؤالك، وستُحفظ المحادثة تلقائيًا.</div>'; }
+function renderWelcome() {
+	chatMessages.innerHTML = `<div class="welcome" id="welcome-message"><div class="welcome-mark">AI</div><h3>كيف أقدر أساعدك اليوم؟</h3><p>اسأل عن حسابك أو استخدم أحد الإجراءات السريعة.</p><div class="suggestions"><button class="suggestion" data-command="زامن حسابي"><span class="suggestion-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 7h-7V4M4 17h7v3" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.5 7.5A7 7 0 0 1 18.7 7M17.5 16.5A7 7 0 0 1 5.3 17" stroke-linecap="round"/></svg></span><span><strong>زامن حسابي</strong><small>إعادة التحقق من حساب واتساب</small></span><span class="suggestion-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m14 7-5 5 5 5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button><button class="suggestion" data-command="زامن القوالب"><span class="suggestion-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16v14H4zM8 9h8M8 13h5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span><strong>زامن القوالب</strong><small>تحديث حالات قوالب واتساب</small></span><span class="suggestion-arrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m14 7-5 5 5 5" stroke-linecap="round" stroke-linejoin="round"/></svg></span></button></div></div>`;
+	chatMessages.querySelectorAll("[data-command]").forEach((button) => {
+		button.addEventListener("click", () => submitSuggestion(button.dataset.command));
+	});
+}
 function removeWelcome() { $("welcome-message")?.remove(); }
 function scrollToBottom() { chatMessages.scrollTop = chatMessages.scrollHeight; }
 function showNotice(message) { limitNotice.textContent = message; limitNotice.classList.add("visible"); }
 function hideNotice() { limitNotice.classList.remove("visible"); limitNotice.textContent = ""; }
+
+function submitSuggestion(command) {
+	if (!command || isProcessing) return;
+	userInput.value = command;
+	userInput.dispatchEvent(new Event("input"));
+	sendMessage();
+}
+
+function draftKey() { return activeConversationId ? `autorply-ai:draft:${activeConversationId}` : null; }
+function saveDraft() {
+	const key = draftKey();
+	if (!key) return;
+	const value = userInput.value;
+	if (value) localStorage.setItem(key, value); else localStorage.removeItem(key);
+}
+function restoreDraft() {
+	const key = draftKey();
+	userInput.value = key ? localStorage.getItem(key) || "" : "";
+	userInput.style.height = "auto";
+	if (userInput.value) userInput.style.height = `${Math.min(userInput.scrollHeight, 150)}px`;
+}
+function clearDraft() { const key = draftKey(); if (key) localStorage.removeItem(key); }
+
+function setSaveState(state) {
+	saveState.className = `save-state ${state}`;
+	saveState.textContent = state === "saving" ? "جاري الحفظ..." : state === "error" ? "تعذر الحفظ" : "محفوظ تلقائيًا";
+}
+
+function formatConversationDate(value) {
+	if (!value) return "";
+	const date = new Date(value.endsWith?.("Z") ? value : `${value.replace(" ", "T")}Z`);
+	if (Number.isNaN(date.getTime())) return "";
+	const diff = Date.now() - date.getTime();
+	if (diff < 60000) return "الآن";
+	if (diff < 3600000) return `منذ ${Math.floor(diff / 60000)} د`;
+	if (diff < 86400000) return `منذ ${Math.floor(diff / 3600000)} س`;
+	return new Intl.DateTimeFormat("ar-SA", { month: "short", day: "numeric" }).format(date);
+}
 
 function showToast(message, type = "info") {
 	const toast = document.createElement("div");
