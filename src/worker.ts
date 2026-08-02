@@ -85,7 +85,8 @@ async function handleSyncTemplates(request: Request): Promise<Response> {
 		const whatsappBotId =
 			extractElementValue(html, "bm_mobile_bot") ||
 			extractElementValue(html, "bm_selected_whatsapp_bot_id") ||
-			extractElementValue(html, "bot_id");
+			extractElementValue(html, "bot_id") ||
+			extractRevalidateBotId(html);
 
 		if (!csrfToken) throw new Error("تعذر استخراج CSRF من جلسة Autorply الحالية.");
 		if (!whatsappBotId || !/^\d+$/.test(whatsappBotId)) {
@@ -126,7 +127,14 @@ async function handleSyncTemplates(request: Request): Promise<Response> {
 					...sharedHeaders,
 					"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
 				},
-				body: new URLSearchParams({ whatsapp_bot_id: whatsappBotId }),
+				body: new URLSearchParams({
+					draw: "1",
+					start: "0",
+					length: "10",
+					"search[value]": "",
+					"search[regex]": "false",
+					whatsapp_bot_id: whatsappBotId,
+				}),
 				redirect: "manual",
 			},
 		);
@@ -196,6 +204,17 @@ function extractElementValue(html: string, elementId: string): string | null {
 		return getAttribute(selectedOption || firstValuedOption || "", "value");
 	}
 
+	return null;
+}
+
+function extractRevalidateBotId(html: string): string | null {
+	const tags = html.match(/<[^>]*\bclass\s*=\s*(["']).*?\1[^>]*>/gi) || [];
+	for (const tag of tags) {
+		const classes = getAttribute(tag, "class")?.split(/\s+/) || [];
+		if (!classes.includes("revalidate-token")) continue;
+		const id = getAttribute(tag, "data-id");
+		if (id) return id;
+	}
 	return null;
 }
 
