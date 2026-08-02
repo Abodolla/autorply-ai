@@ -5,8 +5,8 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "autorply-ai",
-	"main": "src/worker.ts",
-	"compatibility_date": "2025-10-08",
+	"main": "src/ai-search-worker.ts",
+	"compatibility_date": "2026-03-27",
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"assets": {
 		"binding": "ASSETS",
@@ -18,6 +18,12 @@
 	"ai": {
 		"binding": "AI"
 	},
+	"ai_search": [
+		{
+			"binding": "AUTORPLY_KNOWLEDGE",
+			"instance_name": "autorply-knowledge"
+		}
+	],
 	"d1_databases": [
 		{
 			"binding": "DB",
