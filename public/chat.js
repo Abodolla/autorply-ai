@@ -164,7 +164,8 @@ async function sendMessage() {
 	if (!message || isProcessing || !activeConversationId) return;
 	setProcessing(true); removeWelcome(); addMessageToChat("user", message); userInput.value = ""; userInput.style.height = "auto";
 	try {
-		if (isRevalidateCommand(message)) { await saveConversationMessage("user", message); await runRevalidateTool(); }
+		if (isSyncTemplatesCommand(message)) { await saveConversationMessage("user", message); await runSyncTemplatesTool(); }
+		else if (isRevalidateCommand(message)) { await saveConversationMessage("user", message); await runRevalidateTool(); }
 		else await requestAssistantResponse(message);
 		await loadConversations();
 		const active = conversations.find((item) => item.id === activeConversationId);
@@ -184,6 +185,21 @@ async function saveConversationMessage(role, content) {
 function isRevalidateCommand(message) {
 	const normalized = message.toLowerCase().replace(/[أإآ]/g, "ا").replace(/\s+/g, " ").trim();
 	return ["زامن حسابي","زامن حساب الواتساب","مزامنة حسابي","مزامنة حساب الواتساب","حدث حسابي","حدث حساب الواتساب","اعد التحقق من الحساب","اعد التحقق من التوكن"].some((command) => normalized.includes(command));
+}
+
+function isSyncTemplatesCommand(message) {
+	const normalized = message.toLowerCase().replace(/[أإآ]/g, "ا").replace(/\s+/g, " ").trim();
+	return ["زامن القوالب", "مزامنة القوالب", "حدث القوالب", "تحديث القوالب"].some((command) => normalized.includes(command));
+}
+
+async function runSyncTemplatesTool() {
+	addMessageToChat("assistant", "جاري مزامنة القوالب...");
+	const response = await apiFetch("/api/tools/sync-templates", { method: "POST" });
+	const result = await response.json();
+	const successMessage = result.message || "تمت مزامنة القوالب بنجاح.";
+	addMessageToChat("assistant", successMessage);
+	await saveConversationMessage("assistant", successMessage);
+	showToast("اكتملت مزامنة القوالب", "success");
 }
 
 async function getCurrentWhatsAppAccount() {

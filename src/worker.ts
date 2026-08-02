@@ -43,6 +43,10 @@ export default {
 			return handleOpenAIChat(request, env, ctx);
 		}
 
+		if (pathname === "/api/tools/sync-templates" && request.method === "POST") {
+			return handleSyncTemplates(request);
+		}
+
 		return app.fetch(request, env, ctx);
 	},
 } satisfies ExportedHandler<RuntimeEnv>;
@@ -53,6 +57,148 @@ function normalizePath(pathname: string): string {
 		return pathname.slice(APP_PREFIX.length) || "/";
 	}
 	return pathname;
+}
+
+async function handleSyncTemplates(request: Request): Promise<Response> {
+	try {
+		const cookie = request.headers.get("Cookie")?.trim() || "";
+		if (!cookie) throw new Error(ACCOUNT_ERROR);
+
+		const origin = new URL(request.url).origin;
+		const userAgent = request.headers.get("User-Agent") || "Autorply-AI-Worker";
+		const connectResponse = await fetch(
+			new URL("/whatsapp/bot/connect", origin).toString(),
+			{
+				method: "GET",
+				headers: { Accept: "text/html", Cookie: cookie, "User-Agent": userAgent },
+				redirect: "manual",
+			},
+		);
+
+		const contentType = connectResponse.headers.get("content-type") || "";
+		if (!connectResponse.ok || !contentType.toLowerCase().includes("text/html")) {
+			throw new Error(ACCOUNT_ERROR);
+		}
+
+		const html = await connectResponse.text();
+		const csrfToken = extractHtmlValue(html, "csrf-token", true);
+		const whatsappBotId =
+			extractHtmlValue(html, "bm_mobile_bot") ||
+			extractHtmlValue(html, "bm_selected_whatsapp_bot_id") ||
+			extractHtmlValue(html, "bot_id");
+
+		if (!csrfToken || !whatsappBotId || !/^\d+$/.test(whatsappBotId)) {
+			throw new Error(ACCOUNT_ERROR);
+		}
+
+		const sharedHeaders = {
+			Accept: "application/json",
+			Cookie: cookie,
+			"User-Agent": userAgent,
+			"X-Requested-With": "XMLHttpRequest",
+			"X-CSRF-TOKEN": csrfToken,
+		};
+		const statusUrl = new URL(
+			"/whatsapp/bot/manager/template/status",
+			origin,
+		);
+		statusUrl.searchParams.set("whatsapp_bot_id", whatsappBotId);
+		const statusResponse = await fetch(statusUrl.toString(), {
+			method: "GET",
+			headers: sharedHeaders,
+			redirect: "manual",
+		});
+		const statusText = await statusResponse.text();
+		const statusResult = parseJsonObject(statusText);
+
+		if (!statusResponse.ok || isPlatformFailure(statusResult)) {
+			throw new Error(
+				getPlatformMessage(statusResult) || `فشل التنفيذ برمز ${statusResponse.status}`,
+			);
+		}
+
+		const listResponse = await fetch(
+			new URL("/whatsapp/bot/manager/template/list", origin).toString(),
+			{
+				method: "POST",
+				headers: {
+					...sharedHeaders,
+					"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+				},
+				body: new URLSearchParams({ whatsapp_bot_id: whatsappBotId }),
+				redirect: "manual",
+			},
+		);
+
+		const responseText = await listResponse.text();
+		const result = parseJsonObject(responseText);
+		if (!listResponse.ok || isPlatformFailure(result)) {
+			throw new Error(getPlatformMessage(result) || `فشل التنفيذ برمز ${listResponse.status}`);
+		}
+
+		return new Response(
+			JSON.stringify({ success: true, message: "تمت مزامنة القوالب بنجاح." }),
+			{
+				status: 200,
+				headers: {
+					"content-type": "application/json; charset=utf-8",
+					"cache-control": "no-store",
+				},
+			},
+		);
+	} catch (error) {
+		console.error("Template sync error:", error);
+		const message = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
+		return jsonError(message, message === ACCOUNT_ERROR ? 401 : 502);
+	}
+}
+
+function extractHtmlValue(html: string, idOrMetaName: string, isMeta = false): string | null {
+	if (isMeta) {
+		const meta = html.match(
+			new RegExp(`<meta[^>]*name=["']${idOrMetaName}["'][^>]*>`, "i"),
+		)?.[0];
+		return meta?.match(/content=["']([^"']+)["']/i)?.[1]?.trim() || null;
+	}
+
+	const tag = html.match(
+		new RegExp(`<(?:select|input)[^>]*id=["']${idOrMetaName}["'][^>]*>`, "i"),
+	)?.[0];
+	const directValue = tag?.match(/value=["']([^"']+)["']/i)?.[1]?.trim();
+	if (directValue) return directValue;
+
+	if (tag?.toLowerCase().startsWith("<select")) {
+		const start = html.indexOf(tag);
+		const end = html.indexOf("</select>", start);
+		const selectHtml = end === -1 ? "" : html.slice(start, end + 9);
+		const selectedOption = selectHtml.match(/<option[^>]*selected[^>]*>/i)?.[0];
+		const firstOption = selectHtml.match(/<option[^>]*value=["'][^"']+["'][^>]*>/i)?.[0];
+		return (selectedOption || firstOption)?.match(/value=["']([^"']+)["']/i)?.[1]?.trim() || null;
+	}
+
+	return null;
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+	try {
+		const parsed = JSON.parse(value);
+		return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+	} catch {
+		return null;
+	}
+}
+
+function getPlatformMessage(result: Record<string, unknown> | null): string | null {
+	if (!result) return null;
+	for (const key of ["message", "error", "msg"]) {
+		if (typeof result[key] === "string" && result[key].trim()) return result[key].trim();
+	}
+	return null;
+}
+
+function isPlatformFailure(result: Record<string, unknown> | null): boolean {
+	if (!result) return false;
+	return result.success === false || result.status === false || result.status === "0";
 }
 
 async function handleOpenAIChat(
