@@ -81,14 +81,15 @@ async function handleSyncTemplates(request: Request): Promise<Response> {
 		}
 
 		const html = await connectResponse.text();
-		const csrfToken = extractHtmlValue(html, "csrf-token", true);
+		const csrfToken = extractCsrfToken(html);
 		const whatsappBotId =
-			extractHtmlValue(html, "bm_mobile_bot") ||
-			extractHtmlValue(html, "bm_selected_whatsapp_bot_id") ||
-			extractHtmlValue(html, "bot_id");
+			extractElementValue(html, "bm_mobile_bot") ||
+			extractElementValue(html, "bm_selected_whatsapp_bot_id") ||
+			extractElementValue(html, "bot_id");
 
-		if (!csrfToken || !whatsappBotId || !/^\d+$/.test(whatsappBotId)) {
-			throw new Error(ACCOUNT_ERROR);
+		if (!csrfToken) throw new Error("تعذر استخراج CSRF من جلسة Autorply الحالية.");
+		if (!whatsappBotId || !/^\d+$/.test(whatsappBotId)) {
+			throw new Error("تعذر استخراج رقم بوت واتساب من جلسة Autorply الحالية.");
 		}
 
 		const sharedHeaders = {
@@ -153,27 +154,46 @@ async function handleSyncTemplates(request: Request): Promise<Response> {
 	}
 }
 
-function extractHtmlValue(html: string, idOrMetaName: string, isMeta = false): string | null {
-	if (isMeta) {
-		const meta = html.match(
-			new RegExp(`<meta[^>]*name=["']${idOrMetaName}["'][^>]*>`, "i"),
-		)?.[0];
-		return meta?.match(/content=["']([^"']+)["']/i)?.[1]?.trim() || null;
+function getAttribute(tag: string, name: string): string | null {
+	const match = tag.match(new RegExp(`(?:^|\\s)${name}\\s*=\\s*(["'])(.*?)\\1`, "i"));
+	return match?.[2]?.trim() || null;
+}
+
+function extractCsrfToken(html: string): string | null {
+	const metaTags = html.match(/<meta\b[^>]*>/gi) || [];
+	for (const tag of metaTags) {
+		if (getAttribute(tag, "name")?.toLowerCase() === "csrf-token") {
+			const content = getAttribute(tag, "content");
+			if (content) return content;
+		}
 	}
 
-	const tag = html.match(
-		new RegExp(`<(?:select|input)[^>]*id=["']${idOrMetaName}["'][^>]*>`, "i"),
-	)?.[0];
-	const directValue = tag?.match(/value=["']([^"']+)["']/i)?.[1]?.trim();
+	const inputTags = html.match(/<input\b[^>]*>/gi) || [];
+	for (const tag of inputTags) {
+		if (getAttribute(tag, "name") === "_token") {
+			const value = getAttribute(tag, "value");
+			if (value) return value;
+		}
+	}
+	return null;
+}
+
+function extractElementValue(html: string, elementId: string): string | null {
+	const tags = html.match(/<(?:select|input)\b[^>]*>/gi) || [];
+	const tag = tags.find((candidate) => getAttribute(candidate, "id") === elementId);
+	if (!tag) return null;
+
+	const directValue = getAttribute(tag, "value");
 	if (directValue) return directValue;
 
 	if (tag?.toLowerCase().startsWith("<select")) {
 		const start = html.indexOf(tag);
 		const end = html.indexOf("</select>", start);
 		const selectHtml = end === -1 ? "" : html.slice(start, end + 9);
-		const selectedOption = selectHtml.match(/<option[^>]*selected[^>]*>/i)?.[0];
-		const firstOption = selectHtml.match(/<option[^>]*value=["'][^"']+["'][^>]*>/i)?.[0];
-		return (selectedOption || firstOption)?.match(/value=["']([^"']+)["']/i)?.[1]?.trim() || null;
+		const options = selectHtml.match(/<option\b[^>]*>/gi) || [];
+		const selectedOption = options.find((option) => /(?:^|\s)selected(?:\s|=|>)/i.test(option));
+		const firstValuedOption = options.find((option) => Boolean(getAttribute(option, "value")));
+		return getAttribute(selectedOption || firstValuedOption || "", "value");
 	}
 
 	return null;
