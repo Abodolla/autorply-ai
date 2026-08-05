@@ -3,15 +3,12 @@ import { ensureDatabase } from "./database";
 import { Env } from "./types";
 
 const APP_PREFIX = "/autorply-ai";
-const GATEWAY_ID = "autorply-ai";
-const MODEL_ID = "gpt-5.6-luna";
-const SYSTEM_PROMPT =
-	"You are a helpful, friendly assistant. Provide concise and accurate responses.";
+const AI_SEARCH_MODEL = "ai-search:autorply-knowledge";
 const ACCOUNT_ERROR =
 	"❌ تعذر الوصول إلى حساب واتساب المرتبط.\nتأكد أنك مسجل الدخول إلى منصة Autorply من نفس المتصفح، ثم أعد المحاولة.";
 
 type RuntimeEnv = Env & {
-	AI_GATEWAY_TOKEN?: string;
+	AUTORPLY_KNOWLEDGE: AiSearchInstance;
 };
 
 export default {
@@ -40,7 +37,7 @@ export default {
 		}
 
 		if (pathname === "/api/chat" && request.method === "POST") {
-			return handleOpenAIChat(request, env, ctx);
+			return handleKnowledgeChat(request, env, ctx);
 		}
 
 		if (pathname === "/api/tools/sync-templates" && request.method === "POST") {
@@ -254,16 +251,12 @@ function isPlatformFailure(result: Record<string, unknown> | null): boolean {
 	return result.success === false || result.status === false || result.status === "0";
 }
 
-async function handleOpenAIChat(
+async function handleKnowledgeChat(
 	request: Request,
 	env: RuntimeEnv,
 	ctx: ExecutionContext,
 ): Promise<Response> {
 	try {
-		if (!env.AI_GATEWAY_TOKEN) {
-			return jsonError("AI Gateway Token غير مضاف إلى إعدادات Worker", 500);
-		}
-
 		const accountDbId = await getAuthenticatedAccountDbId(request, env);
 		const body = (await request.json()) as {
 			conversationId?: number;
@@ -303,36 +296,18 @@ async function handleOpenAIChat(
 			.bind(conversationId)
 			.all<{ role: "user" | "assistant"; content: string }>();
 
-		const input = (history.results || []).reverse().map((item) => ({
+		const messages = (history.results || []).reverse().map((item) => ({
 			role: item.role,
 			content: item.content,
 		}));
 
-		const gatewayUrl = await env.AI.gateway(GATEWAY_ID).getUrl("openai");
 		const startedAt = Date.now();
-		const upstream = await fetch(`${gatewayUrl}/responses`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"cf-aig-authorization": `Bearer ${env.AI_GATEWAY_TOKEN}`,
-				"cf-aig-collect-log-payload": "false",
-			},
-			body: JSON.stringify({
-				model: MODEL_ID,
-				instructions: SYSTEM_PROMPT,
-				input,
-				max_output_tokens: 1024,
-				stream: true,
-			}),
+		const upstream = await env.AUTORPLY_KNOWLEDGE.chatCompletions({
+			messages,
+			stream: true,
 		});
 
-		if (!upstream.ok || !upstream.body) {
-			const details = await upstream.text();
-			console.error("OpenAI Gateway error:", upstream.status, details);
-			return jsonError(`فشل تشغيل نموذج Luna (${upstream.status})`, 502);
-		}
-
-		const transformed = transformOpenAIStream(upstream.body);
+		const transformed = transformAiSearchStream(upstream);
 		const [clientStream, storageStream] = transformed.tee();
 		ctx.waitUntil(
 			storeAssistantResponse(storageStream, conversationId, startedAt, env),
@@ -346,13 +321,13 @@ async function handleOpenAIChat(
 			},
 		});
 	} catch (error) {
-		console.error("OpenAI chat error:", error);
+		console.error("AI Search chat error:", error);
 		const message = error instanceof Error ? error.message : "حدث خطأ غير متوقع";
 		return jsonError(message, message === ACCOUNT_ERROR ? 401 : 500);
 	}
 }
 
-function transformOpenAIStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+function transformAiSearchStream(source: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
 	const encoder = new TextEncoder();
 	const decoder = new TextDecoder();
 
@@ -380,12 +355,12 @@ function transformOpenAIStream(source: ReadableStream<Uint8Array>): ReadableStre
 
 						try {
 							const event = JSON.parse(data) as {
-								type?: string;
-								delta?: string;
+								choices?: Array<{ delta?: { content?: string } }>;
 							};
-							if (event.type === "response.output_text.delta" && event.delta) {
+							const content = event.choices?.[0]?.delta?.content;
+							if (content) {
 								controller.enqueue(
-									encoder.encode(`data: ${JSON.stringify({ response: event.delta })}\n\n`),
+									encoder.encode(`data: ${JSON.stringify({ response: content })}\n\n`),
 								);
 							}
 						} catch {
@@ -449,7 +424,7 @@ async function storeAssistantResponse(
 		 (conversation_id, role, content, model, latency_ms, created_at)
 		 VALUES (?, 'assistant', ?, ?, ?, datetime('now'))`,
 	)
-		.bind(conversationId, responseText, MODEL_ID, Date.now() - startedAt)
+		.bind(conversationId, responseText, AI_SEARCH_MODEL, Date.now() - startedAt)
 		.run();
 
 	await env.DB.prepare(
